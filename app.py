@@ -409,6 +409,16 @@ VISION_HTML = r"""
   <button id="captureBtn" class="btn secondary" type="button" disabled>📸 CHỤP ẢNH</button>
   <button id="stopCameraBtn" class="btn secondary" type="button" disabled>TẮT CAMERA</button>
 </div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 12px 12px">
+  <input id="targetObject" type="text" maxlength="80"
+    placeholder="Nhập vật cần tìm, ví dụ: điện thoại, cái ly, người..."
+    aria-label="Vật thể cần tìm"
+    style="flex:1;min-width:220px;padding:11px 12px;border:1px solid #45666a;border-radius:8px;background:#0c1214;color:#e8f1f2">
+  <button id="findTargetBtn" class="btn" type="button">🔎 TÌM & KHOANH TRÒN</button>
+</div>
+<div style="padding:0 13px 12px;color:#829397;font-size:10px;line-height:1.6">
+  Nhập tên vật trước khi chụp để tự động khoanh tròn sau khi chụp. COCO-SSD hỗ trợ các loại vật thể đã được huấn luyện.
+</div>
 
 <video id="cameraVideo" autoplay playsinline muted
   style="display:none;width:100%;max-height:400px;object-fit:contain;background:#000">
@@ -438,17 +448,112 @@ VISION_HTML = r"""
 <script>
 (()=>{
  const $=id=>document.getElementById(id);const input=$('fileInput'),previewBox=$('previewBox'),preview=$('preview'),overlay=$('overlay'),empty=$('emptyState'),detectBtn=$('detectBtn'),boxBtn=$('boxBtn'),clearBtn=$('clearBtn'),changeBtn=$('changeBtn'),chooseBtn=$('chooseBtn'),fileInfo=$('fileInfo'),modelState=$('modelState'),resultsBox=$('results'),description=$('description'),toast=$('toast');
- let model=null,file=null,objectUrl=null,preds=[],showBoxes=true,aiImageData=null,busy=false,toastTimer=null;
+ let model=null,file=null,objectUrl=null,preds=[],showBoxes=true,aiImageData=null,busy=false,toastTimer=null,autoFindAfterLoad=false,targetMode=false;
  const vn={'person':'Người','bicycle':'Xe đạp','car':'Ô tô','motorcycle':'Xe máy','airplane':'Máy bay','bus':'Xe buýt','train':'Tàu hỏa','truck':'Xe tải','boat':'Thuyền','traffic light':'Đèn giao thông','fire hydrant':'Trụ cứu hỏa','stop sign':'Biển báo dừng','parking meter':'Trụ đỗ xe','bench':'Ghế băng','bird':'Chim','cat':'Mèo','dog':'Chó','horse':'Ngựa','sheep':'Cừu','cow':'Bò','elephant':'Voi','bear':'Gấu','zebra':'Ngựa vằn','giraffe':'Hươu cao cổ','backpack':'Ba lô','umbrella':'Ô / dù','handbag':'Túi xách','tie':'Cà vạt','suitcase':'Va li','frisbee':'Đĩa ném','skis':'Ván trượt tuyết','snowboard':'Ván trượt tuyết','sports ball':'Bóng thể thao','kite':'Diều','baseball bat':'Gậy bóng chày','baseball glove':'Găng bóng chày','skateboard':'Ván trượt','surfboard':'Ván lướt sóng','tennis racket':'Vợt tennis','bottle':'Chai','wine glass':'Ly thủy tinh','cup':'Cốc','fork':'Nĩa','knife':'Dao','spoon':'Thìa','bowl':'Bát','banana':'Chuối','apple':'Táo','sandwich':'Bánh mì kẹp','orange':'Cam','broccoli':'Bông cải xanh','carrot':'Cà rốt','hot dog':'Xúc xích','pizza':'Pizza','donut':'Bánh donut','cake':'Bánh kem','chair':'Ghế','couch':'Ghế sofa','potted plant':'Chậu cây','bed':'Giường','dining table':'Bàn ăn','toilet':'Bồn cầu','tv':'TV','laptop':'Máy tính xách tay','mouse':'Chuột máy tính','remote':'Điều khiển từ xa','keyboard':'Bàn phím','cell phone':'Điện thoại','microwave':'Lò vi sóng','oven':'Lò nướng','toaster':'Máy nướng bánh mì','sink':'Bồn rửa','refrigerator':'Tủ lạnh','book':'Sách','clock':'Đồng hồ','vase':'Bình hoa','scissors':'Kéo','teddy bear':'Gấu bông','hair drier':'Máy sấy tóc','toothbrush':'Bàn chải đánh răng'};
  const icons={person:'♙',cat:'♧',dog:'♧',car:'▰',bicycle:'⚙','cell phone':'▯',laptop:'▣',book:'▤',bottle:'♜',chair:'▱',cup:'◡',clock:'◷',tv:'▣',keyboard:'⌨',mouse:'⌁',apple:'●',banana:'↗',bird:'♧'};
  function notify(s){toast.textContent=s;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),3600)}
  function setModel(s,color){modelState.textContent=s;modelState.style.color=color||'#ffd479'}
  function clearCanvas(){const c=overlay.getContext('2d');c.clearRect(0,0,overlay.width,overlay.height)}
- function resetAnalysis(){preds=[];aiImageData=null;clearCanvas();$('objectCount').textContent='—';$('classCount').textContent='—';$('topScore').textContent='—';$('objectNote').textContent='Chưa phân tích ảnh';$('scoreBar').style.width='0';$('resultCount').textContent='Chưa phân tích';resultsBox.innerHTML='<div class="emptyresults">Ảnh đã sẵn sàng. Nhấn <b>PHÂN TÍCH TOÀN DIỆN</b> để bắt đầu.</div>';description.textContent='Ảnh đã chọn. Nhấn “Phân tích toàn diện” để AI mô tả ảnh bằng tiếng Việt.';$('visionState').textContent='Sẵn sàng';$('visionNote').textContent='Mô tả ảnh và hỏi đáp cần API key';$('askBtn').disabled=!file}
+ function resetAnalysis(){preds=[];aiImageData=null;targetMode=false;clearCanvas();$('objectCount').textContent='—';$('classCount').textContent='—';$('topScore').textContent='—';$('objectNote').textContent='Chưa phân tích ảnh';$('scoreBar').style.width='0';$('resultCount').textContent='Chưa phân tích';resultsBox.innerHTML='<div class="emptyresults">Ảnh đã sẵn sàng. Nhấn <b>PHÂN TÍCH TOÀN DIỆN</b> để bắt đầu.</div>';description.textContent='Ảnh đã chọn. Nhấn “Phân tích toàn diện” để AI mô tả ảnh bằng tiếng Việt.';$('visionState').textContent='Sẵn sàng';$('visionNote').textContent='Mô tả ảnh và hỏi đáp cần API key';$('askBtn').disabled=!file}
  function formatSize(bytes){return bytes>=1024*1024*1024?(bytes/1024/1024/1024).toFixed(2)+' GB':(bytes/1024/1024).toFixed(2)+' MB'}
- function chooseFile(f){if(!f)return;if(!f.type.startsWith('image/')){notify('Tệp này không phải ảnh. Vui lòng chọn tệp hình ảnh.');return}if(f.size>500*1024*1024){notify('Ảnh vượt quá giới hạn 500 MB. Vui lòng chọn tệp nhỏ hơn.');return}if(objectUrl)URL.revokeObjectURL(objectUrl);file=f;objectUrl=URL.createObjectURL(f);preview.onload=()=>{preview.classList.remove('hidden');empty.classList.add('hidden');previewBox.classList.add('has-image');overlay.classList.remove('hidden');$('metaResolution').textContent=preview.naturalWidth+' × '+preview.naturalHeight+' px';if(preds.length&&showBoxes)drawBoxes(preds);};preview.onerror=()=>notify('Trình duyệt không mở được ảnh này. Hãy thử JPG hoặc PNG.');preview.src=objectUrl;fileInfo.textContent=f.name+' · '+formatSize(f.size);$('metaName').textContent=f.name;$('metaSize').textContent=formatSize(f.size);$('metaType').textContent=f.type||'Ảnh';$('imageStatus').textContent='Đã chọn';changeBtn.classList.remove('hidden');detectBtn.disabled=!model;boxBtn.disabled=false;clearBtn.disabled=false;$('askBtn').disabled=false;resetAnalysis();notify('Đã chọn ảnh. Sẵn sàng phân tích.');}
+ function chooseFile(f){if(!f)return;if(!f.type.startsWith('image/')){notify('Tệp này không phải ảnh. Vui lòng chọn tệp hình ảnh.');return}if(f.size>500*1024*1024){notify('Ảnh vượt quá giới hạn 500 MB. Vui lòng chọn tệp nhỏ hơn.');return}if(objectUrl)URL.revokeObjectURL(objectUrl);file=f;objectUrl=URL.createObjectURL(f);preview.onload=()=>{preview.classList.remove('hidden');empty.classList.add('hidden');previewBox.classList.add('has-image');overlay.classList.remove('hidden');$('metaResolution').textContent=preview.naturalWidth+' × '+preview.naturalHeight+' px';if(preds.length&&showBoxes){if(targetMode)drawTargetCircles(preds);else drawBoxes(preds);}if(autoFindAfterLoad){autoFindAfterLoad=false;setTimeout(()=>findTarget(),150);}};preview.onerror=()=>notify('Trình duyệt không mở được ảnh này. Hãy thử JPG hoặc PNG.');preview.src=objectUrl;fileInfo.textContent=f.name+' · '+formatSize(f.size);$('metaName').textContent=f.name;$('metaSize').textContent=formatSize(f.size);$('metaType').textContent=f.type||'Ảnh';$('imageStatus').textContent='Đã chọn';changeBtn.classList.remove('hidden');detectBtn.disabled=!model;boxBtn.disabled=false;clearBtn.disabled=false;$('askBtn').disabled=false;resetAnalysis();notify('Đã chọn ảnh. Sẵn sàng phân tích.');}
  chooseBtn.addEventListener('click',()=>input.click());changeBtn.addEventListener('click',()=>input.click());input.addEventListener('change',e=>{chooseFile(e.target.files[0]);input.value=''});['dragenter','dragover'].forEach(t=>previewBox.addEventListener(t,e=>{e.preventDefault();previewBox.classList.add('dragover')}));['dragleave','drop'].forEach(t=>previewBox.addEventListener(t,e=>{e.preventDefault();previewBox.classList.remove('dragover')}));previewBox.addEventListener('drop',e=>chooseFile(e.dataTransfer.files[0]));
  function drawBoxes(items){if(!preview.naturalWidth||!preview.clientWidth)return;const dpr=Math.min(window.devicePixelRatio||1,2),w=preview.clientWidth,h=preview.clientHeight;overlay.width=Math.max(1,Math.round(w*dpr));overlay.height=Math.max(1,Math.round(h*dpr));overlay.style.width='100%';overlay.style.height='100%';const ctx=overlay.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);if(!showBoxes)return;const scaleX=w/(preview.naturalWidth),scaleY=h/(preview.naturalHeight),font=Math.max(11,Math.min(15,w/45));ctx.lineWidth=2;ctx.font=`700 ${font}px Segoe UI,Arial`;items.forEach((p,i)=>{const [x0,y0,bw0,bh0]=p.bbox;const x=x0*scaleX,y=y0*scaleY,bw=bw0*scaleX,bh=bh0*scaleY;const color=i%3===0?'#5bf0f4':i%3===1?'#f27fd2':'#87f0b5';ctx.strokeStyle=color;ctx.shadowColor=color;ctx.shadowBlur=7;ctx.strokeRect(x,y,bw,bh);ctx.shadowBlur=0;const label=(vn[p.class]||p.class)+' '+Math.round(p.score*100)+'%';const tw=ctx.measureText(label).width+12,th=font+10,ly=Math.max(0,y-th);ctx.fillStyle=color;ctx.fillRect(x,ly,tw,th);ctx.fillStyle='#071517';ctx.fillText(label,x+6,ly+font+1);});}
+
+ const targetInput=$('targetObject');
+ const findTargetBtn=$('findTargetBtn');
+ function normalizeSearch(value){return String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim();}
+ const targetAliases={
+   'nguoi':'person','con nguoi':'person','people':'person',
+   'dien thoai':'cell phone','dien thoai di dong':'cell phone','smartphone':'cell phone','phone':'cell phone',
+   'cai ly':'cup','ly':'cup','coc':'cup','cai coc':'cup',
+   'chai nuoc':'bottle','binh nuoc':'bottle','chai':'bottle',
+   'xe may':'motorcycle','xe oto':'car','o to':'car','xe hoi':'car',
+   'may tinh':'laptop','laptop':'laptop','may tinh xach tay':'laptop',
+   'ban phim':'keyboard','chuot may tinh':'mouse','sach':'book',
+   'cho':'dog','con cho':'dog','meo':'cat','con meo':'cat',
+   'ghe':'chair','ghe sofa':'couch','ban':'dining table',
+   'dong ho':'clock','ti vi':'tv','tivi':'tv','tv':'tv',
+   'qua tao':'apple','tao':'apple','chuoi':'banana','cam':'orange',
+   'xe dap':'bicycle','o du':'umbrella','du':'umbrella'
+ };
+ function drawTargetCircles(items){
+   if(!preview.naturalWidth||!preview.naturalHeight)return;
+   const dpr=Math.min(window.devicePixelRatio||1,2);
+   const w=previewBox.clientWidth,h=previewBox.clientHeight;
+   overlay.width=Math.max(1,Math.round(w*dpr));
+   overlay.height=Math.max(1,Math.round(h*dpr));
+   overlay.style.width='100%';overlay.style.height='100%';
+   const ctx=overlay.getContext('2d');
+   ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+   if(!showBoxes)return;
+   const imageRect=preview.getBoundingClientRect();
+   const boxRect=previewBox.getBoundingClientRect();
+   const left=imageRect.left-boxRect.left,top=imageRect.top-boxRect.top;
+   const scaleX=imageRect.width/preview.naturalWidth;
+   const scaleY=imageRect.height/preview.naturalHeight;
+   const font=Math.max(11,Math.min(15,w/45));
+   ctx.lineWidth=3;ctx.font=`700 ${font}px Segoe UI,Arial`;
+   items.forEach(p=>{
+     const [x0,y0,bw0,bh0]=p.bbox;
+     const x=left+x0*scaleX,y=top+y0*scaleY;
+     const bw=bw0*scaleX,bh=bh0*scaleY;
+     const cx=x+bw/2,cy=y+bh/2;
+     ctx.beginPath();
+     ctx.ellipse(cx,cy,Math.max(10,bw*.58),Math.max(10,bh*.58),0,0,Math.PI*2);
+     ctx.strokeStyle='#ff4545';ctx.shadowColor='#ff3030';ctx.shadowBlur=10;ctx.stroke();ctx.shadowBlur=0;
+     const label=(vn[p.class]||p.class)+' '+Math.round(p.score*100)+'%';
+     const tw=ctx.measureText(label).width+12,th=font+10;
+     const lx=Math.max(0,Math.min(w-tw,cx-tw/2));
+     const ly=Math.max(0,cy-Math.max(10,bh*.58)-th-3);
+     ctx.fillStyle='#ff4545';ctx.fillRect(lx,ly,tw,th);
+     ctx.fillStyle='#fff';ctx.fillText(label,lx+6,ly+font+1);
+   });
+ }
+ async function findTarget(){
+   const raw=targetInput.value.trim();
+   if(!raw){notify('Hãy nhập tên vật cần tìm trước khi chụp ảnh.');return;}
+   if(!file||!preview.naturalWidth){notify('Hãy chụp ảnh hoặc chọn ảnh trước.');return;}
+   if(!model){notify('COCO-SSD chưa sẵn sàng. Hãy chờ mô hình tải xong.');return;}
+   if(busy){notify('AI đang xử lý, hãy đợi một chút.');return;}
+   const query=normalizeSearch(raw);
+   const wanted=targetAliases[query]||query;
+   const oldText=findTargetBtn.textContent;
+   findTargetBtn.disabled=true;findTargetBtn.textContent='ĐANG TÌM…';
+   try{
+     const ratio=Math.min(1,1024/Math.max(preview.naturalWidth,preview.naturalHeight));
+     const canvas=document.createElement('canvas');
+     canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));
+     canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));
+     canvas.getContext('2d').drawImage(preview,0,0,canvas.width,canvas.height);
+     const detected=await model.detect(canvas,30,.35);
+     const matches=detected.filter(p=>{
+       const english=normalizeSearch(p.class);
+       const vietnamese=normalizeSearch(vn[p.class]||'');
+       return english===wanted||vietnamese===query;
+     }).map(p=>({...p,bbox:p.bbox.map(v=>v/ratio)}));
+     matches.sort((a,b)=>b.score-a.score);
+     preds=matches;showBoxes=true;targetMode=true;
+     boxBtn.disabled=false;boxBtn.textContent='⌗ Ẩn / hiện khoanh tròn';
+     drawTargetCircles(preds);renderResults(preds);
+     if(matches.length){
+       description.textContent=`Đã tìm thấy ${matches.length} vật thể phù hợp với yêu cầu “${raw}”. Các vòng tròn màu đỏ đánh dấu vị trí được COCO-SSD nhận diện.`;
+       setModel('Đã tìm thấy','#7cf0b6');
+       notify(`Đã khoanh tròn ${matches.length} vật thể phù hợp.`);
+     }else{
+       description.textContent=`Không tìm thấy “${raw}” trong các lớp vật thể mà COCO-SSD hỗ trợ. Thử tên như người, điện thoại, cái ly, chai, xe máy, chó hoặc mèo.`;
+       setModel('Không tìm thấy','#ffd479');
+       notify('Không tìm thấy vật phù hợp. Thử tên vật thể khác nhé.');
+     }
+   }catch(error){
+     console.error(error);notify('Không tìm được vật thể: '+(error.message||'Hãy thử lại.'));
+   }finally{
+     findTargetBtn.disabled=false;findTargetBtn.textContent=oldText;
+   }
+ }
+ findTargetBtn.addEventListener('click',findTarget);
+ targetInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();findTarget();}});
+
 let cameraStream = null;
 
 const cameraBtn = document.getElementById('cameraBtn');
@@ -494,6 +599,7 @@ captureBtn.addEventListener('click', () => {
             return;
         }
 
+        autoFindAfterLoad = Boolean(targetInput.value.trim());
         chooseFile(new File(
             [blob],
             'anh-camera.jpg',
@@ -517,15 +623,15 @@ function stopCamera() {
 }
 
 stopCameraBtn.addEventListener('click', stopCamera);
- window.addEventListener('resize',()=>{if(preds.length)drawBoxes(preds)});
+ window.addEventListener('resize',()=>{if(preds.length){if(targetMode)drawTargetCircles(preds);else drawBoxes(preds)}});
  function renderResults(items){$('objectCount').textContent=items.length;$('classCount').textContent=new Set(items.map(p=>p.class)).size;$('topScore').textContent=items.length?Math.round(items[0].score*100)+'%':'0%';$('scoreBar').style.width=(items.length?Math.round(items[0].score*100):0)+'%';$('objectNote').textContent=items.length?'Đã phát hiện trong ảnh':'Không phát hiện vật thể rõ';$('resultCount').textContent=items.length+' kết quả';if(!items.length){resultsBox.innerHTML='<div class="emptyresults">Chưa phát hiện vật thể thuộc nhóm mà mô hình hỗ trợ. Hãy thử ảnh rõ hơn; AI mô tả vẫn có thể nhận ra nội dung khác.</div>';return}resultsBox.innerHTML='';items.forEach(p=>{const el=document.createElement('div');el.className='resultitem';const top=document.createElement('div');top.className='resulttop';const ico=document.createElement('div');ico.className='resulticon';ico.textContent=icons[p.class]||'✧';const name=document.createElement('div');name.className='resultname';name.textContent=vn[p.class]||p.class;const score=document.createElement('div');score.className='percent';score.textContent=Math.round(p.score*100)+'%';top.append(ico,name,score);const bar=document.createElement('div');bar.className='bar';const fill=document.createElement('div');fill.className='barfill';fill.style.width=Math.round(p.score*100)+'%';bar.append(fill);el.append(top,bar);resultsBox.append(el)})}
  async function loadModel(){try{if(!window.tf||!window.cocoSsd)throw Error('Thiếu thư viện AI');setModel('Đang tải mô hình…');model=await cocoSsd.load({base:'lite_mobilenet_v2'});setModel('SẴN SÀNG','#7cf0b6');$('visionState').textContent='Sẵn sàng';if(file)detectBtn.disabled=false}catch(e){console.error(e);setModel('Không tải được','#ff9dbb');$('visionState').textContent='Chưa tải';$('visionNote').textContent='Kiểm tra kết nối Internet và tải lại trang'} }
  async function compressImage(){if(aiImageData)return aiImageData;if(!preview.naturalWidth)throw Error('Trình duyệt chưa đọc xong ảnh.');const maxSide=1600,ratio=Math.min(1,maxSide/Math.max(preview.naturalWidth,preview.naturalHeight));let canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));const ctx=canvas.getContext('2d',{alpha:false});ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(preview,0,0,canvas.width,canvas.height);let blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.84));while(blob&&blob.size>5*1024*1024&&Math.max(canvas.width,canvas.height)>640){const down=.75,nw=Math.max(1,Math.round(canvas.width*down)),nh=Math.max(1,Math.round(canvas.height*down));const c2=document.createElement('canvas');c2.width=nw;c2.height=nh;c2.getContext('2d',{alpha:false}).drawImage(canvas,0,0,nw,nh);canvas=c2;blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.78));}if(!blob)throw Error('Không thể nén ảnh này trên trình duyệt.');if(blob.size>6*1024*1024)throw Error('Ảnh sau nén vẫn quá lớn. Hãy chọn ảnh nhỏ hơn hoặc giảm độ phân giải.');aiImageData=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(Error('Không đọc được ảnh sau nén.'));r.readAsDataURL(blob)});return aiImageData}
  async function askVision(question){if(!file)throw Error('Bạn cần chọn ảnh trước.');const dataUrl=await compressImage();const response=await fetch('/analyze-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:dataUrl,question})});let data={};try{data=await response.json()}catch(_){}if(!response.ok)throw Error(data.error||'Không phân tích được ảnh.');return data.reply}
  window.tttAskVision=askVision;
- async function runAll(question='Hãy mô tả chi tiết nội dung ảnh bằng tiếng Việt. Nêu các đối tượng chính, đặc điểm nhìn thấy, bối cảnh và điều gì chưa thể xác định chắc chắn.'){if(!file||busy)return;busy=true;detectBtn.disabled=true;$('askBtn').disabled=true;previewBox.classList.add('scanning');detectBtn.innerHTML='◌ ĐANG PHÂN TÍCH…';$('visionState').textContent='Đang chạy';try{if(model){const ratio=Math.min(1,1024/Math.max(preview.naturalWidth,preview.naturalHeight)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));canvas.getContext('2d').drawImage(preview,0,0,canvas.width,canvas.height);preds=await model.detect(canvas,30,.40);preds.sort((a,b)=>b.score-a.score);preds=preds.map(p=>({...p,bbox:[p.bbox[0]/ratio,p.bbox[1]/ratio,p.bbox[2]/ratio,p.bbox[3]/ratio]}));drawBoxes(preds);renderResults(preds)}else{notify('Mô hình khoanh vùng chưa sẵn sàng; thử tải lại trang.')}description.textContent='Đang tạo bản ảnh tối ưu và gửi yêu cầu tới AI thị giác…';$('visionState').textContent='Đang gọi AI';$('visionNote').textContent='Đang xử lý';try{const reply=await askVision(question);description.textContent=reply;$('visionState').textContent='Hoàn tất';$('visionNote').textContent='Đã nhận phản hồi từ AI';$('apiNote').textContent='Kết quả do mô hình AI tạo ra có thể sai; hãy kiểm tra lại những thông tin quan trọng.';notify('Đã hoàn thành phân tích ảnh.')}catch(err){description.textContent=err.message;$('visionState').textContent='Cần kiểm tra';$('visionNote').textContent='Không hoàn tất mô tả AI';notify(err.message)}}catch(err){console.error(err);notify('Lỗi khi nhận diện vật thể: '+(err.message||'Vui lòng thử lại.'))}finally{busy=false;previewBox.classList.remove('scanning');detectBtn.disabled=!file||!model;detectBtn.innerHTML='✦ &nbsp; PHÂN TÍCH TOÀN DIỆN';$('askBtn').disabled=!file;}}
- detectBtn.addEventListener('click',()=>runAll());boxBtn.addEventListener('click',()=>{showBoxes=!showBoxes;drawBoxes(preds);boxBtn.textContent=showBoxes?'⌗ Ẩn / hiện khung':'⌗ Hiện khung'});$('questionForm').addEventListener('submit',async e=>{e.preventDefault();const q=$('questionInput').value.trim();if(!q||!file||busy)return;busy=true;$('askBtn').disabled=true;description.textContent='Đang hỏi AI về ảnh…';try{const a=await askVision(q);description.textContent=a;notify('AI đã trả lời câu hỏi.')}catch(err){description.textContent=err.message;notify(err.message)}finally{busy=false;$('askBtn').disabled=!file}});
- clearBtn.addEventListener('click',()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=null;file=null;preds=[];aiImageData=null;preview.removeAttribute('src');preview.classList.add('hidden');overlay.classList.add('hidden');empty.classList.remove('hidden');previewBox.classList.remove('has-image','scanning');fileInfo.textContent='Chưa chọn ảnh · Giới hạn 500 MB';changeBtn.classList.add('hidden');detectBtn.disabled=true;boxBtn.disabled=true;clearBtn.disabled=true;$('askBtn').disabled=true;$('metaName').textContent='—';$('metaSize').textContent='—';$('metaResolution').textContent='—';$('metaType').textContent='—';$('imageStatus').textContent='Chờ ảnh';resetAnalysis()});
+ async function runAll(question='Hãy mô tả chi tiết nội dung ảnh bằng tiếng Việt. Nêu các đối tượng chính, đặc điểm nhìn thấy, bối cảnh và điều gì chưa thể xác định chắc chắn.'){if(!file||busy)return;targetMode=false;busy=true;detectBtn.disabled=true;$('askBtn').disabled=true;previewBox.classList.add('scanning');detectBtn.innerHTML='◌ ĐANG PHÂN TÍCH…';$('visionState').textContent='Đang chạy';try{if(model){const ratio=Math.min(1,1024/Math.max(preview.naturalWidth,preview.naturalHeight)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));canvas.getContext('2d').drawImage(preview,0,0,canvas.width,canvas.height);preds=await model.detect(canvas,30,.40);preds.sort((a,b)=>b.score-a.score);preds=preds.map(p=>({...p,bbox:[p.bbox[0]/ratio,p.bbox[1]/ratio,p.bbox[2]/ratio,p.bbox[3]/ratio]}));drawBoxes(preds);renderResults(preds)}else{notify('Mô hình khoanh vùng chưa sẵn sàng; thử tải lại trang.')}description.textContent='Đang tạo bản ảnh tối ưu và gửi yêu cầu tới AI thị giác…';$('visionState').textContent='Đang gọi AI';$('visionNote').textContent='Đang xử lý';try{const reply=await askVision(question);description.textContent=reply;$('visionState').textContent='Hoàn tất';$('visionNote').textContent='Đã nhận phản hồi từ AI';$('apiNote').textContent='Kết quả do mô hình AI tạo ra có thể sai; hãy kiểm tra lại những thông tin quan trọng.';notify('Đã hoàn thành phân tích ảnh.')}catch(err){description.textContent=err.message;$('visionState').textContent='Cần kiểm tra';$('visionNote').textContent='Không hoàn tất mô tả AI';notify(err.message)}}catch(err){console.error(err);notify('Lỗi khi nhận diện vật thể: '+(err.message||'Vui lòng thử lại.'))}finally{busy=false;previewBox.classList.remove('scanning');detectBtn.disabled=!file||!model;detectBtn.innerHTML='✦ &nbsp; PHÂN TÍCH TOÀN DIỆN';$('askBtn').disabled=!file;}}
+ detectBtn.addEventListener('click',()=>runAll());boxBtn.addEventListener('click',()=>{showBoxes=!showBoxes;if(targetMode)drawTargetCircles(preds);else drawBoxes(preds);boxBtn.textContent=showBoxes?(targetMode?'⌗ Ẩn / hiện khoanh tròn':'⌗ Ẩn / hiện khung'):(targetMode?'⌗ Hiện khoanh tròn':'⌗ Hiện khung')});$('questionForm').addEventListener('submit',async e=>{e.preventDefault();const q=$('questionInput').value.trim();if(!q||!file||busy)return;busy=true;$('askBtn').disabled=true;description.textContent='Đang hỏi AI về ảnh…';try{const a=await askVision(q);description.textContent=a;notify('AI đã trả lời câu hỏi.')}catch(err){description.textContent=err.message;notify(err.message)}finally{busy=false;$('askBtn').disabled=!file}});
+ clearBtn.addEventListener('click',()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=null;file=null;preds=[];aiImageData=null;targetMode=false;autoFindAfterLoad=false;preview.removeAttribute('src');preview.classList.add('hidden');overlay.classList.add('hidden');empty.classList.remove('hidden');previewBox.classList.remove('has-image','scanning');fileInfo.textContent='Chưa chọn ảnh · Giới hạn 500 MB';changeBtn.classList.add('hidden');detectBtn.disabled=true;boxBtn.disabled=true;clearBtn.disabled=true;$('askBtn').disabled=true;$('metaName').textContent='—';$('metaSize').textContent='—';$('metaResolution').textContent='—';$('metaType').textContent='—';$('imageStatus').textContent='Chờ ảnh';resetAnalysis()});
  $('reportNav').addEventListener('click',()=>{if(!file){notify('Hãy chọn và phân tích ảnh trước.');return}const text='BÁO CÁO PHÂN TÍCH ẢNH — TTT AI\nTệp: '+file.name+'\nKích thước: '+formatSize(file.size)+'\nĐộ phân giải: '+preview.naturalWidth+' x '+preview.naturalHeight+'\nSố vật thể: '+preds.length+'\n\nMÔ TẢ AI:\n'+description.textContent+'\n\nVẬT THỂ:\n'+preds.map(p=>(vn[p.class]||p.class)+' — '+Math.round(p.score*100)+'%').join('\n');const b=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download='bao-cao-ttt-ai.txt';a.click();URL.revokeObjectURL(url);notify('Đã tạo báo cáo dạng TXT.')});$('settingsNav').addEventListener('click',()=>notify('Cấu hình API key trong Environment của máy chủ, không đặt khóa bí mật trong mã giao diện.'));$('helpNav').addEventListener('click',()=>notify('Chọn ảnh → Phân tích toàn diện → nhập câu hỏi riêng về ảnh nếu cần.'));
  loadModel();
 })();
