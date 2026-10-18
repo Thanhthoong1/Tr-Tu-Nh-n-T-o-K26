@@ -1,6 +1,7 @@
 
 import os
 import logging
+import requests
 from flask import Flask, request, jsonify, render_template_string
 from openai import OpenAI
 
@@ -259,21 +260,6 @@ def home():
     return render_template_string(HTML)
 
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-    if not api_key:
-        return jsonify(
-            error="Chưa cài OPENAI_API_KEY. "
-                  "Hãy cấu hình biến môi trường."
-        ), 503
-
-    data = request.get_json(silent=True) or {}
-    messages = data.get("messages", [])
-
-    if not isinstance(messages, list) or not messages:
-        return jsonify(error="Bạn hãy nhập câu hỏi."), 400
 
     safe_messages = []
 
@@ -294,34 +280,67 @@ def chat():
             "role": role,
             "content": content[:4000]
         })
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.get_json(silent=True) or {}
+    messages = data.get("messages", [])
 
-    if (
-        not safe_messages
-        or safe_messages[-1]["role"] != "user"
-    ):
+    if not isinstance(messages, list) or not messages:
+        return jsonify(error="Bạn hãy nhập câu hỏi."), 400
+
+    safe_messages = []
+    for item in messages[-12:]:
+        if not isinstance(item, dict):
+            continue
+
+        role = item.get("role")
+        content = item.get("content", "")
+
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+
+        safe_messages.append({
+            "role": role,
+            "content": content[:4000]
+        })
+
+    if not safe_messages or safe_messages[-1]["role"] != "user":
         return jsonify(error="Tin nhắn chưa hợp lệ."), 400
 
-    try:
-        client = OpenAI(api_key=api_key)
-
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            instructions=(
-                "Bạn là trợ lý AI thân thiện của website "
-                "Trí Tuệ Nhân Tạo K26. Trả lời bằng tiếng Việt, "
-                "rõ ràng, hữu ích và phù hợp với người mới học."
-            ),
-            input=safe_messages
+    safe_messages.insert(0, {
+        "role": "system",
+        "content": (
+            "Bạn là trợ lý AI thân thiện của website "
+            "Trí Tuệ Nhân Tạo K26. Trả lời bằng tiếng Việt, "
+            "rõ ràng, hữu ích và phù hợp với người mới học."
         )
+    })
 
-        return jsonify(reply=response.output_text)
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/chat",
+            json={
+                "model": "llama3.2:1b",
+                "messages": safe_messages,
+                "stream": False
+            },
+            timeout=180
+        )
+        response.raise_for_status()
+        result = response.json()
+        reply = result.get("message", {}).get("content", "")
 
-    except Exception:
-        app.logger.exception("Lỗi khi gọi dịch vụ AI")
+        if not reply:
+            return jsonify(error="AI chưa tạo được câu trả lời."), 502
+
+        return jsonify(reply=reply)
+
+    except requests.exceptions.Timeout:
+        return jsonify(error="AI đang xử lý lâu. Bạn hãy thử lại."), 504
+    except requests.exceptions.RequestException:
+        app.logger.exception("Lỗi kết nối Ollama")
         return jsonify(
-            error="Chưa gọi được dịch vụ AI. "
-                  "Hãy kiểm tra API key, hạn mức API "
-                  "và nhật ký lỗi."
+            error="Không kết nối được Ollama. Hãy kiểm tra Ollama đang chạy."
         ), 502
 
 # ================= TTT AI — TRí Tuệ Nhân Tạo K26 =================
@@ -513,8 +532,47 @@ stopCameraBtn.addEventListener('click', stopCamera);
 function toggle(open){panel.hidden=!open;launch.setAttribute('aria-expanded',String(open));if(open)input.focus()}
 function message(text,who='ai'){const el=document.createElement('div');el.className='holo-message'+(who==='user'?' user':'');el.textContent=text;chat.appendChild(el);chat.scrollTop=chat.scrollHeight;return el}
 launch.addEventListener('click',()=>toggle(panel.hidden));close.addEventListener('click',()=>toggle(false));
-form.addEventListener('submit',async e=>{e.preventDefault();const q=input.value.trim();if(!q)return;input.value='';message(q,'user');const reply=message('Đang phân tích câu hỏi bằng AI…');send.disabled=true;try{if(typeof window.tttAskVision!=='function')throw Error('Chức năng hỏi ảnh chưa sẵn sàng.');const answer=await window.tttAskVision(q);reply.textContent=answer;}catch(err){reply.textContent=err.message||'Chưa thể trả lời. Hãy chọn ảnh và kiểm tra cấu hình AI.'}finally{send.disabled=false;input.focus()}});
-})();
+form.addEventListener('submit', async e => {
+    e.preventDefault();
+
+    const q = input.value.trim();
+    if (!q) return;
+
+    input.value = '';
+    message(q, 'user');
+
+    const el = document.createElement('div');
+    el.className = 'holo-message';
+    el.textContent = 'AI đang suy nghĩ...';
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+
+    send.disabled = true;
+
+    try {
+        const response = await fetch('/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                messages: [{role: 'user', content: q}]
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Không gọi được AI.');
+        }
+
+        el.textContent = data.reply || 'AI chưa có câu trả lời.';
+    } catch (err) {
+        el.textContent = 'Lỗi: ' + err.message;
+    } finally {
+        send.disabled = false;
+        input.focus();
+        chat.scrollTop = chat.scrollHeight;
+    }
+});})();
 </script>
 
 </body></html>
