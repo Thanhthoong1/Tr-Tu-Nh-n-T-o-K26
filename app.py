@@ -374,6 +374,15 @@ VISION_HTML = r"""
           <div class="leftcol">
             <section class="card"><div class="cardhead"><div><div class="cardtitle">01 / Ảnh đầu vào</div><div class="cardsub">Kéo thả ảnh vào khung hoặc chọn tệp từ thiết bị</div></div><div class="tiny">XEM TRƯỚC</div></div>
               <input type="file" id="fileInput" accept="image/*" hidden>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px">
+  <button id="cameraBtn" class="btn" type="button">📷 MỞ CAMERA</button>
+  <button id="captureBtn" class="btn secondary" type="button" disabled>📸 CHỤP ẢNH</button>
+  <button id="stopCameraBtn" class="btn secondary" type="button" disabled>TẮT CAMERA</button>
+</div>
+
+<video id="cameraVideo" autoplay playsinline muted
+  style="display:none;width:100%;max-height:400px;object-fit:contain;background:#000">
+</video>
               <div id="previewBox" class="preview"><div class="empty" id="emptyState"><div class="uploadico">⇧</div><h3>Tải ảnh lên để phân tích</h3><p>Hỗ trợ ảnh JPG, PNG, WEBP và các định dạng ảnh trình duyệt đọc được. Tệp tối đa <b>500 MB</b>.</p><button id="chooseBtn" class="btn" type="button" style="margin-top:16px">＋ &nbsp; CHỌN HÌNH ẢNH</button><div class="fineprint">Ảnh gốc được giữ trên thiết bị. Để phân tích bằng mô hình thị giác, hệ thống gửi bản ảnh đã thu nhỏ và nén.</div></div><img id="preview" class="hidden" alt="Ảnh xem trước"><canvas id="overlay" class="hidden"></canvas><div class="scanline"></div></div>
               <div class="filebar"><div id="fileInfo" class="fileinfo">Chưa chọn ảnh · Giới hạn 500 MB</div><button id="changeBtn" class="btn secondary hidden" type="button" style="padding:7px 9px;font-size:9px">Đổi ảnh</button></div>
               <div class="actions"><button id="detectBtn" class="btn" type="button" disabled>✦ &nbsp; PHÂN TÍCH TOÀN DIỆN</button><button id="boxBtn" class="btn secondary" type="button" disabled>⌗ Hiện / ẩn khung</button><button id="clearBtn" class="btn secondary" type="button" disabled>Xóa ảnh</button></div>
@@ -410,6 +419,74 @@ VISION_HTML = r"""
  function chooseFile(f){if(!f)return;if(!f.type.startsWith('image/')){notify('Tệp này không phải ảnh. Vui lòng chọn tệp hình ảnh.');return}if(f.size>500*1024*1024){notify('Ảnh vượt quá giới hạn 500 MB. Vui lòng chọn tệp nhỏ hơn.');return}if(objectUrl)URL.revokeObjectURL(objectUrl);file=f;objectUrl=URL.createObjectURL(f);preview.onload=()=>{preview.classList.remove('hidden');empty.classList.add('hidden');previewBox.classList.add('has-image');overlay.classList.remove('hidden');$('metaResolution').textContent=preview.naturalWidth+' × '+preview.naturalHeight+' px';if(preds.length&&showBoxes)drawBoxes(preds);};preview.onerror=()=>notify('Trình duyệt không mở được ảnh này. Hãy thử JPG hoặc PNG.');preview.src=objectUrl;fileInfo.textContent=f.name+' · '+formatSize(f.size);$('metaName').textContent=f.name;$('metaSize').textContent=formatSize(f.size);$('metaType').textContent=f.type||'Ảnh';$('imageStatus').textContent='Đã chọn';changeBtn.classList.remove('hidden');detectBtn.disabled=!model;boxBtn.disabled=false;clearBtn.disabled=false;$('askBtn').disabled=false;resetAnalysis();notify('Đã chọn ảnh. Sẵn sàng phân tích.');}
  chooseBtn.addEventListener('click',()=>input.click());changeBtn.addEventListener('click',()=>input.click());input.addEventListener('change',e=>{chooseFile(e.target.files[0]);input.value=''});['dragenter','dragover'].forEach(t=>previewBox.addEventListener(t,e=>{e.preventDefault();previewBox.classList.add('dragover')}));['dragleave','drop'].forEach(t=>previewBox.addEventListener(t,e=>{e.preventDefault();previewBox.classList.remove('dragover')}));previewBox.addEventListener('drop',e=>chooseFile(e.dataTransfer.files[0]));
  function drawBoxes(items){if(!preview.naturalWidth||!preview.clientWidth)return;const dpr=Math.min(window.devicePixelRatio||1,2),w=preview.clientWidth,h=preview.clientHeight;overlay.width=Math.max(1,Math.round(w*dpr));overlay.height=Math.max(1,Math.round(h*dpr));overlay.style.width='100%';overlay.style.height='100%';const ctx=overlay.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);if(!showBoxes)return;const scaleX=w/(preview.naturalWidth),scaleY=h/(preview.naturalHeight),font=Math.max(11,Math.min(15,w/45));ctx.lineWidth=2;ctx.font=`700 ${font}px Segoe UI,Arial`;items.forEach((p,i)=>{const [x0,y0,bw0,bh0]=p.bbox;const x=x0*scaleX,y=y0*scaleY,bw=bw0*scaleX,bh=bh0*scaleY;const color=i%3===0?'#5bf0f4':i%3===1?'#f27fd2':'#87f0b5';ctx.strokeStyle=color;ctx.shadowColor=color;ctx.shadowBlur=7;ctx.strokeRect(x,y,bw,bh);ctx.shadowBlur=0;const label=(vn[p.class]||p.class)+' '+Math.round(p.score*100)+'%';const tw=ctx.measureText(label).width+12,th=font+10,ly=Math.max(0,y-th);ctx.fillStyle=color;ctx.fillRect(x,ly,tw,th);ctx.fillStyle='#071517';ctx.fillText(label,x+6,ly+font+1);});}
+let cameraStream = null;
+
+const cameraBtn = document.getElementById('cameraBtn');
+const captureBtn = document.getElementById('captureBtn');
+const stopCameraBtn = document.getElementById('stopCameraBtn');
+const cameraVideo = document.getElementById('cameraVideo');
+
+cameraBtn.addEventListener('click', async () => {
+    try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' },
+            audio: false
+        });
+
+        cameraVideo.srcObject = cameraStream;
+        cameraVideo.style.display = 'block';
+        await cameraVideo.play();
+
+        captureBtn.disabled = false;
+        stopCameraBtn.disabled = false;
+        notify('Camera đã mở!');
+    } catch (error) {
+        notify('Không mở được camera. Hãy kiểm tra quyền camera.');
+    }
+});
+
+captureBtn.addEventListener('click', () => {
+    if (!cameraVideo.videoWidth) {
+        notify('Camera chưa sẵn sàng. Hãy đợi một chút.');
+        return;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = cameraVideo.videoWidth;
+    canvas.height = cameraVideo.videoHeight;
+    canvas.getContext('2d').drawImage(
+        cameraVideo, 0, 0, canvas.width, canvas.height
+    );
+
+    canvas.toBlob(blob => {
+        if (!blob) {
+            notify('Không chụp được ảnh.');
+            return;
+        }
+
+        chooseFile(new File(
+            [blob],
+            'anh-camera.jpg',
+            { type: 'image/jpeg' }
+        ));
+
+        stopCamera();
+    }, 'image/jpeg', 0.92);
+});
+
+function stopCamera() {
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+    }
+
+    cameraVideo.srcObject = null;
+    cameraVideo.style.display = 'none';
+    captureBtn.disabled = true;
+    stopCameraBtn.disabled = true;
+}
+
+stopCameraBtn.addEventListener('click', stopCamera);
  window.addEventListener('resize',()=>{if(preds.length)drawBoxes(preds)});
  function renderResults(items){$('objectCount').textContent=items.length;$('classCount').textContent=new Set(items.map(p=>p.class)).size;$('topScore').textContent=items.length?Math.round(items[0].score*100)+'%':'0%';$('scoreBar').style.width=(items.length?Math.round(items[0].score*100):0)+'%';$('objectNote').textContent=items.length?'Đã phát hiện trong ảnh':'Không phát hiện vật thể rõ';$('resultCount').textContent=items.length+' kết quả';if(!items.length){resultsBox.innerHTML='<div class="emptyresults">Chưa phát hiện vật thể thuộc nhóm mà mô hình hỗ trợ. Hãy thử ảnh rõ hơn; AI mô tả vẫn có thể nhận ra nội dung khác.</div>';return}resultsBox.innerHTML='';items.forEach(p=>{const el=document.createElement('div');el.className='resultitem';const top=document.createElement('div');top.className='resulttop';const ico=document.createElement('div');ico.className='resulticon';ico.textContent=icons[p.class]||'✧';const name=document.createElement('div');name.className='resultname';name.textContent=vn[p.class]||p.class;const score=document.createElement('div');score.className='percent';score.textContent=Math.round(p.score*100)+'%';top.append(ico,name,score);const bar=document.createElement('div');bar.className='bar';const fill=document.createElement('div');fill.className='barfill';fill.style.width=Math.round(p.score*100)+'%';bar.append(fill);el.append(top,bar);resultsBox.append(el)})}
  async function loadModel(){try{if(!window.tf||!window.cocoSsd)throw Error('Thiếu thư viện AI');setModel('Đang tải mô hình…');model=await cocoSsd.load({base:'lite_mobilenet_v2'});setModel('SẴN SÀNG','#7cf0b6');$('visionState').textContent='Sẵn sàng';if(file)detectBtn.disabled=false}catch(e){console.error(e);setModel('Không tải được','#ff9dbb');$('visionState').textContent='Chưa tải';$('visionNote').textContent='Kiểm tra kết nối Internet và tải lại trang'} }
