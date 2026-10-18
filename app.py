@@ -1,5 +1,7 @@
 
 import os
+import json
+import re
 import logging
 import requests
 from flask import Flask, request, jsonify, render_template_string
@@ -407,7 +409,8 @@ VISION_HTML = r"""
               <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px">
   <button id="cameraBtn" class="btn" type="button">📷 MỞ CAMERA</button>
   <button id="captureBtn" class="btn secondary" type="button" disabled>📸 CHỤP ẢNH</button>
-  <button id="stopCameraBtn" class="btn secondary" type="button" disabled>TẮT CAMERA</button>
+  <button id="switchCameraBtn" class="btn secondary" type="button" disabled>🔄 ĐỔI CAMERA</button>
+  <button id="stopCameraBtn" class="btn secondary" type="button" disabled>⏹ TẮT CAMERA</button>
 </div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 12px 12px">
   <input id="targetObject" type="text" maxlength="80"
@@ -415,9 +418,10 @@ VISION_HTML = r"""
     aria-label="Vật thể cần tìm"
     style="flex:1;min-width:220px;padding:11px 12px;border:1px solid #45666a;border-radius:8px;background:#0c1214;color:#e8f1f2">
   <button id="findTargetBtn" class="btn" type="button">🔎 TÌM & KHOANH TRÒN</button>
+  <button id="groundTargetBtn" class="btn secondary" type="button">✨ AI ĐỊNH VỊ VẬT BẤT KỲ</button>
 </div>
 <div style="padding:0 13px 12px;color:#829397;font-size:10px;line-height:1.6">
-  Nhập tên vật trước khi chụp để tự động khoanh tròn sau khi chụp. COCO-SSD hỗ trợ các loại vật thể đã được huấn luyện.
+  COCO-SSD nhận diện nhanh các lớp có sẵn. Nếu vật bạn tìm không thuộc các lớp đó, dùng “AI ĐỊNH VỊ VẬT BẤT KỲ” để Gemini thử xác định vị trí và khoanh vùng. Cần GEMINI_API_KEY và có thể không chính xác với mọi ảnh.
 </div>
 
 <video id="cameraVideo" autoplay playsinline muted
@@ -462,6 +466,7 @@ VISION_HTML = r"""
 
  const targetInput=$('targetObject');
  const findTargetBtn=$('findTargetBtn');
+ const groundTargetBtn=$('groundTargetBtn');
  function normalizeSearch(value){return String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim();}
  const targetAliases={
    'nguoi':'person','con nguoi':'person','people':'person',
@@ -470,7 +475,8 @@ VISION_HTML = r"""
    'chai nuoc':'bottle','binh nuoc':'bottle','chai':'bottle',
    'xe may':'motorcycle','xe oto':'car','o to':'car','xe hoi':'car',
    'may tinh':'laptop','laptop':'laptop','may tinh xach tay':'laptop',
-   'ban phim':'keyboard','chuot may tinh':'mouse','sach':'book',
+   'ban phim':'keyboard','chuot may tinh':'mouse','con chuot may tinh':'mouse',
+   'chuot':'mouse','computer mouse':'mouse','sach':'book',
    'cho':'dog','con cho':'dog','meo':'cat','con meo':'cat',
    'ghe':'chair','ghe sofa':'couch','ban':'dining table',
    'dong ho':'clock','ti vi':'tv','tivi':'tv','tv':'tv',
@@ -526,7 +532,7 @@ VISION_HTML = r"""
      canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));
      canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));
      canvas.getContext('2d').drawImage(preview,0,0,canvas.width,canvas.height);
-     const detected=await model.detect(canvas,30,.35);
+     const detected=await model.detect(canvas,30,.20);
      const matches=detected.filter(p=>{
        const english=normalizeSearch(p.class);
        const vietnamese=normalizeSearch(vn[p.class]||'');
@@ -541,9 +547,15 @@ VISION_HTML = r"""
        setModel('Đã tìm thấy','#7cf0b6');
        notify(`Đã khoanh tròn ${matches.length} vật thể phù hợp.`);
      }else{
-       description.textContent=`Không tìm thấy “${raw}” trong các lớp vật thể mà COCO-SSD hỗ trợ. Thử tên như người, điện thoại, cái ly, chai, xe máy, chó hoặc mèo.`;
-       setModel('Không tìm thấy','#ffd479');
-       notify('Không tìm thấy vật phù hợp. Thử tên vật thể khác nhé.');
+       const detectedNames=[...new Set(detected.map(p=>(vn[p.class]||p.class)+' ('+Math.round(p.score*100)+'%)'))];
+       const mouseQuery=['mouse','computer mouse','chuot','chuot may tinh','con chuot may tinh'].includes(wanted);
+       description.textContent=mouseQuery
+         ? `Ảnh có thể có chuột máy tính, nhưng COCO-SSD không có lớp “mouse” trong bộ nhãn chuẩn nên không thể khoanh chính xác bằng mô hình này. Bạn vẫn có thể gửi ảnh cho chatbot Gemini để hỏi về ảnh.`
+         : detectedNames.length
+           ? `Chưa tìm thấy “${raw}”. AI nhìn thấy: ${detectedNames.join(', ')}. Thử một tên trong danh sách này hoặc chụp ảnh rõ hơn.`
+           : `COCO-SSD chưa nhận diện được vật nào trong ảnh. Hãy chụp gần hơn, đủ sáng, để vật cần tìm chiếm phần lớn ảnh rồi thử lại.`;
+       setModel('Không tìm thấy vật phù hợp','#ffd479');
+       notify(mouseQuery?'COCO-SSD không hỗ trợ lớp chuột máy tính. Hãy hỏi Gemini về ảnh.':'Chưa nhận diện được vật đó. Thử chụp gần và rõ hơn nhé.');
      }
    }catch(error){
      console.error(error);notify('Không tìm được vật thể: '+(error.message||'Hãy thử lại.'));
@@ -552,31 +564,93 @@ VISION_HTML = r"""
    }
  }
  findTargetBtn.addEventListener('click',findTarget);
+ async function findTargetWithGemini(){
+   const raw=targetInput.value.trim();
+   if(!raw){notify('Hãy nhập tên vật cần tìm trước.');return;}
+   if(!file||!preview.naturalWidth){notify('Hãy chụp ảnh hoặc chọn ảnh trước.');return;}
+   if(busy)return;
+   busy=true;groundTargetBtn.disabled=true;const old=groundTargetBtn.textContent;groundTargetBtn.textContent='AI ĐANG ĐỊNH VỊ…';
+   try{
+     const image=await compressImage();
+     const response=await fetch('/locate-object',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image,target:raw})});
+     let data={};try{data=await response.json()}catch(_){}
+     if(!response.ok)throw Error(data.error||'AI chưa định vị được vật thể.');
+     const boxes=Array.isArray(data.objects)?data.objects:[];
+     if(!boxes.length){description.textContent=data.reply||'AI chưa xác định được vị trí rõ ràng. Hãy thử ảnh sáng hơn, chụp gần hơn hoặc mô tả vật cụ thể hơn.';notify('AI chưa tìm được vị trí đủ chắc chắn.');return;}
+     preds=boxes.map((obj,i)=>{
+       const b=obj.box;
+       // Gemini returns [ymin, xmin, ymax, xmax] normalized to 0..1000.
+       const x=Math.max(0,Math.min(preview.naturalWidth,(Number(b[1])/1000)*preview.naturalWidth));
+       const y=Math.max(0,Math.min(preview.naturalHeight,(Number(b[0])/1000)*preview.naturalHeight));
+       const x2=Math.max(x,Math.min(preview.naturalWidth,(Number(b[3])/1000)*preview.naturalWidth));
+       const y2=Math.max(y,Math.min(preview.naturalHeight,(Number(b[2])/1000)*preview.naturalHeight));
+       return {class:String(obj.label||raw),score:Math.max(0,Math.min(1,Number(obj.confidence??0.75))),bbox:[x,y,x2-x,y2-y],source:'gemini'};
+     }).filter(p=>p.bbox[2]>2&&p.bbox[3]>2);
+     if(!preds.length){description.textContent='AI trả về vùng định vị không hợp lệ. Hãy thử lại với ảnh khác.';notify('Không đọc được tọa độ vật thể.');return;}
+     targetMode=true;showBoxes=true;boxBtn.disabled=false;boxBtn.textContent='⌗ Ẩn / hiện khoanh tròn';
+     drawTargetCircles(preds);renderResults(preds);
+     description.textContent=`Gemini đã đề xuất ${preds.length} vùng có thể chứa “${raw}”. Đây là định vị do AI suy luận, nên hãy kiểm tra vòng tròn có đúng vật bạn cần tìm không.`;
+     setModel('Gemini định vị','#7cf0b6');$('visionState').textContent='Đã định vị';$('visionNote').textContent='Vùng định vị do Gemini suy luận';
+     notify(`AI đã khoanh ${preds.length} vùng. Hãy kiểm tra kết quả.`);
+   }catch(error){console.error(error);description.textContent=error.message;notify(error.message||'Lỗi khi định vị vật thể.');}
+   finally{busy=false;groundTargetBtn.disabled=false;groundTargetBtn.textContent=old;}
+ }
+ groundTargetBtn.addEventListener('click',findTargetWithGemini);
  targetInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();findTarget();}});
 
 let cameraStream = null;
-
+let cameraFacing = 'environment';
 const cameraBtn = document.getElementById('cameraBtn');
 const captureBtn = document.getElementById('captureBtn');
 const stopCameraBtn = document.getElementById('stopCameraBtn');
+const switchCameraBtn = document.getElementById('switchCameraBtn');
 const cameraVideo = document.getElementById('cameraVideo');
+
+async function startCamera(facing) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Trình duyệt không hỗ trợ camera. Hãy mở website bằng Chrome/Safari qua HTTPS.');
+    }
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+    }
+    cameraFacing = facing;
+    try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+        });
+    } catch (firstError) {
+        // Some laptops do not expose front/rear facing modes. Try any available camera.
+        cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    }
+    cameraVideo.srcObject = cameraStream;
+    cameraVideo.style.display = 'block';
+    await cameraVideo.play();
+    captureBtn.disabled = false;
+    stopCameraBtn.disabled = false;
+    switchCameraBtn.disabled = false;
+    cameraBtn.textContent = '📷 CAMERA ĐANG MỞ';
+}
 
 cameraBtn.addEventListener('click', async () => {
     try {
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment' },
-            audio: false
-        });
-
-        cameraVideo.srcObject = cameraStream;
-        cameraVideo.style.display = 'block';
-        await cameraVideo.play();
-
-        captureBtn.disabled = false;
-        stopCameraBtn.disabled = false;
-        notify('Camera đã mở!');
+        await startCamera(cameraFacing);
+        notify(cameraFacing === 'environment' ? 'Camera sau đã mở. Hãy hướng vào vật cần chụp.' : 'Camera đã mở.');
     } catch (error) {
-        notify('Không mở được camera. Hãy kiểm tra quyền camera.');
+        console.error(error);
+        notify(error.message || 'Không mở được camera. Hãy cấp quyền camera cho trình duyệt.');
+    }
+});
+
+switchCameraBtn.addEventListener('click', async () => {
+    const nextFacing = cameraFacing === 'environment' ? 'user' : 'environment';
+    try {
+        await startCamera(nextFacing);
+        notify(nextFacing === 'user' ? 'Đã chuyển sang camera trước.' : 'Đã chuyển sang camera sau.');
+    } catch (error) {
+        console.error(error);
+        notify('Thiết bị không đổi được camera. Có thể máy chỉ có một camera hoặc trình duyệt không hỗ trợ chuyển camera.');
     }
 });
 
@@ -585,27 +659,22 @@ captureBtn.addEventListener('click', () => {
         notify('Camera chưa sẵn sàng. Hãy đợi một chút.');
         return;
     }
-
     const canvas = document.createElement('canvas');
     canvas.width = cameraVideo.videoWidth;
     canvas.height = cameraVideo.videoHeight;
-    canvas.getContext('2d').drawImage(
-        cameraVideo, 0, 0, canvas.width, canvas.height
-    );
-
+    const ctx = canvas.getContext('2d');
+    if (cameraFacing === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+    }
+    ctx.drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(blob => {
         if (!blob) {
-            notify('Không chụp được ảnh.');
+            notify('Không chụp được ảnh. Hãy thử lại.');
             return;
         }
-
         autoFindAfterLoad = Boolean(targetInput.value.trim());
-        chooseFile(new File(
-            [blob],
-            'anh-camera.jpg',
-            { type: 'image/jpeg' }
-        ));
-
+        chooseFile(new File([blob], 'anh-camera.jpg', { type: 'image/jpeg' }));
         stopCamera();
     }, 'image/jpeg', 0.92);
 });
@@ -615,21 +684,38 @@ function stopCamera() {
         cameraStream.getTracks().forEach(track => track.stop());
         cameraStream = null;
     }
-
     cameraVideo.srcObject = null;
     cameraVideo.style.display = 'none';
     captureBtn.disabled = true;
     stopCameraBtn.disabled = true;
+    switchCameraBtn.disabled = true;
+    cameraBtn.textContent = '📷 MỞ CAMERA';
 }
-
 stopCameraBtn.addEventListener('click', stopCamera);
  window.addEventListener('resize',()=>{if(preds.length){if(targetMode)drawTargetCircles(preds);else drawBoxes(preds)}});
  function renderResults(items){$('objectCount').textContent=items.length;$('classCount').textContent=new Set(items.map(p=>p.class)).size;$('topScore').textContent=items.length?Math.round(items[0].score*100)+'%':'0%';$('scoreBar').style.width=(items.length?Math.round(items[0].score*100):0)+'%';$('objectNote').textContent=items.length?'Đã phát hiện trong ảnh':'Không phát hiện vật thể rõ';$('resultCount').textContent=items.length+' kết quả';if(!items.length){resultsBox.innerHTML='<div class="emptyresults">Chưa phát hiện vật thể thuộc nhóm mà mô hình hỗ trợ. Hãy thử ảnh rõ hơn; AI mô tả vẫn có thể nhận ra nội dung khác.</div>';return}resultsBox.innerHTML='';items.forEach(p=>{const el=document.createElement('div');el.className='resultitem';const top=document.createElement('div');top.className='resulttop';const ico=document.createElement('div');ico.className='resulticon';ico.textContent=icons[p.class]||'✧';const name=document.createElement('div');name.className='resultname';name.textContent=vn[p.class]||p.class;const score=document.createElement('div');score.className='percent';score.textContent=Math.round(p.score*100)+'%';top.append(ico,name,score);const bar=document.createElement('div');bar.className='bar';const fill=document.createElement('div');fill.className='barfill';fill.style.width=Math.round(p.score*100)+'%';bar.append(fill);el.append(top,bar);resultsBox.append(el)})}
- async function loadModel(){try{if(!window.tf||!window.cocoSsd)throw Error('Thiếu thư viện AI');setModel('Đang tải mô hình…');model=await cocoSsd.load({base:'lite_mobilenet_v2'});setModel('SẴN SÀNG','#7cf0b6');$('visionState').textContent='Sẵn sàng';if(file)detectBtn.disabled=false}catch(e){console.error(e);setModel('Không tải được','#ff9dbb');$('visionState').textContent='Chưa tải';$('visionNote').textContent='Kiểm tra kết nối Internet và tải lại trang'} }
+ async function loadModel(){
+   try{
+     if(!window.tf||!window.cocoSsd)throw Error('Thiếu thư viện AI');
+     setModel('Đang tải mô hình chính xác cao…');
+     try {
+       // Mô hình MobileNet V2 có thể chính xác hơn nhưng tải nặng hơn.
+       model=await cocoSsd.load({base:'mobilenet_v2'});
+       setModel('AI độ chính xác cao sẵn sàng','#7cf0b6');
+     } catch(primaryError) {
+       console.warn('Không tải được mô hình lớn, chuyển sang bản nhẹ:',primaryError);
+       setModel('Đang tải mô hình nhẹ…');
+       model=await cocoSsd.load({base:'lite_mobilenet_v2'});
+       setModel('AI bản nhẹ sẵn sàng','#7cf0b6');
+     }
+     $('visionState').textContent='Sẵn sàng';
+     if(file)detectBtn.disabled=false;
+   }catch(e){console.error(e);setModel('Không tải được','#ff9dbb');$('visionState').textContent='Chưa tải';$('visionNote').textContent='Kiểm tra kết nối Internet và tải lại trang'}
+ }
  async function compressImage(){if(aiImageData)return aiImageData;if(!preview.naturalWidth)throw Error('Trình duyệt chưa đọc xong ảnh.');const maxSide=1600,ratio=Math.min(1,maxSide/Math.max(preview.naturalWidth,preview.naturalHeight));let canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));const ctx=canvas.getContext('2d',{alpha:false});ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(preview,0,0,canvas.width,canvas.height);let blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.84));while(blob&&blob.size>5*1024*1024&&Math.max(canvas.width,canvas.height)>640){const down=.75,nw=Math.max(1,Math.round(canvas.width*down)),nh=Math.max(1,Math.round(canvas.height*down));const c2=document.createElement('canvas');c2.width=nw;c2.height=nh;c2.getContext('2d',{alpha:false}).drawImage(canvas,0,0,nw,nh);canvas=c2;blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.78));}if(!blob)throw Error('Không thể nén ảnh này trên trình duyệt.');if(blob.size>6*1024*1024)throw Error('Ảnh sau nén vẫn quá lớn. Hãy chọn ảnh nhỏ hơn hoặc giảm độ phân giải.');aiImageData=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(Error('Không đọc được ảnh sau nén.'));r.readAsDataURL(blob)});return aiImageData}
  async function askVision(question){if(!file)throw Error('Bạn cần chọn ảnh trước.');const dataUrl=await compressImage();const response=await fetch('/analyze-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:dataUrl,question})});let data={};try{data=await response.json()}catch(_){}if(!response.ok)throw Error(data.error||'Không phân tích được ảnh.');return data.reply}
  window.tttAskVision=askVision;
- async function runAll(question='Hãy mô tả chi tiết nội dung ảnh bằng tiếng Việt. Nêu các đối tượng chính, đặc điểm nhìn thấy, bối cảnh và điều gì chưa thể xác định chắc chắn.'){if(!file||busy)return;targetMode=false;busy=true;detectBtn.disabled=true;$('askBtn').disabled=true;previewBox.classList.add('scanning');detectBtn.innerHTML='◌ ĐANG PHÂN TÍCH…';$('visionState').textContent='Đang chạy';try{if(model){const ratio=Math.min(1,1024/Math.max(preview.naturalWidth,preview.naturalHeight)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));canvas.getContext('2d').drawImage(preview,0,0,canvas.width,canvas.height);preds=await model.detect(canvas,30,.40);preds.sort((a,b)=>b.score-a.score);preds=preds.map(p=>({...p,bbox:[p.bbox[0]/ratio,p.bbox[1]/ratio,p.bbox[2]/ratio,p.bbox[3]/ratio]}));drawBoxes(preds);renderResults(preds)}else{notify('Mô hình khoanh vùng chưa sẵn sàng; thử tải lại trang.')}description.textContent='Đang tạo bản ảnh tối ưu và gửi yêu cầu tới AI thị giác…';$('visionState').textContent='Đang gọi AI';$('visionNote').textContent='Đang xử lý';try{const reply=await askVision(question);description.textContent=reply;$('visionState').textContent='Hoàn tất';$('visionNote').textContent='Đã nhận phản hồi từ AI';$('apiNote').textContent='Kết quả do mô hình AI tạo ra có thể sai; hãy kiểm tra lại những thông tin quan trọng.';notify('Đã hoàn thành phân tích ảnh.')}catch(err){description.textContent=err.message;$('visionState').textContent='Cần kiểm tra';$('visionNote').textContent='Không hoàn tất mô tả AI';notify(err.message)}}catch(err){console.error(err);notify('Lỗi khi nhận diện vật thể: '+(err.message||'Vui lòng thử lại.'))}finally{busy=false;previewBox.classList.remove('scanning');detectBtn.disabled=!file||!model;detectBtn.innerHTML='✦ &nbsp; PHÂN TÍCH TOÀN DIỆN';$('askBtn').disabled=!file;}}
+ async function runAll(question='Hãy mô tả chi tiết nội dung ảnh bằng tiếng Việt. Nêu các đối tượng chính, đặc điểm nhìn thấy, bối cảnh và điều gì chưa thể xác định chắc chắn.'){if(!file||busy)return;targetMode=false;busy=true;detectBtn.disabled=true;$('askBtn').disabled=true;previewBox.classList.add('scanning');detectBtn.innerHTML='◌ ĐANG PHÂN TÍCH…';$('visionState').textContent='Đang chạy';try{if(model){const ratio=Math.min(1,1024/Math.max(preview.naturalWidth,preview.naturalHeight)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(preview.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(preview.naturalHeight*ratio));canvas.getContext('2d').drawImage(preview,0,0,canvas.width,canvas.height);preds=await model.detect(canvas,40,.30);preds.sort((a,b)=>b.score-a.score);preds=preds.map(p=>({...p,bbox:[p.bbox[0]/ratio,p.bbox[1]/ratio,p.bbox[2]/ratio,p.bbox[3]/ratio]}));drawBoxes(preds);renderResults(preds)}else{notify('Mô hình khoanh vùng chưa sẵn sàng; thử tải lại trang.')}description.textContent='Đang tạo bản ảnh tối ưu và gửi yêu cầu tới AI thị giác…';$('visionState').textContent='Đang gọi AI';$('visionNote').textContent='Đang xử lý';try{const reply=await askVision(question);description.textContent=reply;$('visionState').textContent='Hoàn tất';$('visionNote').textContent='Đã nhận phản hồi từ AI';$('apiNote').textContent='Kết quả do mô hình AI tạo ra có thể sai; hãy kiểm tra lại những thông tin quan trọng.';notify('Đã hoàn thành phân tích ảnh.')}catch(err){description.textContent=err.message;$('visionState').textContent='Cần kiểm tra';$('visionNote').textContent='Không hoàn tất mô tả AI';notify(err.message)}}catch(err){console.error(err);notify('Lỗi khi nhận diện vật thể: '+(err.message||'Vui lòng thử lại.'))}finally{busy=false;previewBox.classList.remove('scanning');detectBtn.disabled=!file||!model;detectBtn.innerHTML='✦ &nbsp; PHÂN TÍCH TOÀN DIỆN';$('askBtn').disabled=!file;}}
  detectBtn.addEventListener('click',()=>runAll());boxBtn.addEventListener('click',()=>{showBoxes=!showBoxes;if(targetMode)drawTargetCircles(preds);else drawBoxes(preds);boxBtn.textContent=showBoxes?(targetMode?'⌗ Ẩn / hiện khoanh tròn':'⌗ Ẩn / hiện khung'):(targetMode?'⌗ Hiện khoanh tròn':'⌗ Hiện khung')});$('questionForm').addEventListener('submit',async e=>{e.preventDefault();const q=$('questionInput').value.trim();if(!q||!file||busy)return;busy=true;$('askBtn').disabled=true;description.textContent='Đang hỏi AI về ảnh…';try{const a=await askVision(q);description.textContent=a;notify('AI đã trả lời câu hỏi.')}catch(err){description.textContent=err.message;notify(err.message)}finally{busy=false;$('askBtn').disabled=!file}});
  clearBtn.addEventListener('click',()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=null;file=null;preds=[];aiImageData=null;targetMode=false;autoFindAfterLoad=false;preview.removeAttribute('src');preview.classList.add('hidden');overlay.classList.add('hidden');empty.classList.remove('hidden');previewBox.classList.remove('has-image','scanning');fileInfo.textContent='Chưa chọn ảnh · Giới hạn 500 MB';changeBtn.classList.add('hidden');detectBtn.disabled=true;boxBtn.disabled=true;clearBtn.disabled=true;$('askBtn').disabled=true;$('metaName').textContent='—';$('metaSize').textContent='—';$('metaResolution').textContent='—';$('metaType').textContent='—';$('imageStatus').textContent='Chờ ảnh';resetAnalysis()});
  $('reportNav').addEventListener('click',()=>{if(!file){notify('Hãy chọn và phân tích ảnh trước.');return}const text='BÁO CÁO PHÂN TÍCH ẢNH — TTT AI\nTệp: '+file.name+'\nKích thước: '+formatSize(file.size)+'\nĐộ phân giải: '+preview.naturalWidth+' x '+preview.naturalHeight+'\nSố vật thể: '+preds.length+'\n\nMÔ TẢ AI:\n'+description.textContent+'\n\nVẬT THỂ:\n'+preds.map(p=>(vn[p.class]||p.class)+' — '+Math.round(p.score*100)+'%').join('\n');const b=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download='bao-cao-ttt-ai.txt';a.click();URL.revokeObjectURL(url);notify('Đã tạo báo cáo dạng TXT.')});$('settingsNav').addEventListener('click',()=>notify('Cấu hình API key trong Environment của máy chủ, không đặt khóa bí mật trong mã giao diện.'));$('helpNav').addEventListener('click',()=>notify('Chọn ảnh → Phân tích toàn diện → nhập câu hỏi riêng về ảnh nếu cần.'));
@@ -639,57 +725,82 @@ stopCameraBtn.addEventListener('click', stopCamera);
 
 <div class="holo-panel" id="holoPanel" hidden role="dialog" aria-label="Trợ lý ảo TTT AI">
   <div class="holo-head"><div class="holo-mini" aria-hidden="true"></div><div class="holo-headtext"><strong>TTT AI · TRỢ LÝ ẢO</strong><small>Hologram thị giác · Sẵn sàng hỗ trợ</small></div><button class="holo-close" id="holoClose" aria-label="Đóng trợ lý">✕</button></div>
-  <div class="holo-chat" id="holoChat"><div class="holo-message">Xin chào! ✨ Mình là trợ lý ảo TTT AI. Hãy tải ảnh lên khu vực phân tích, sau đó hỏi mình về nội dung ảnh nhé.</div></div>
-  <form class="holo-form" id="holoForm"><input id="holoInput" maxlength="500" placeholder="Hỏi về ảnh đang chọn…" autocomplete="off"><button id="holoSend" type="submit">GỬI</button></form>
-  <div class="holo-hint">Câu trả lời cần có ảnh đã chọn. AI có thể nhầm; hãy kiểm tra thông tin quan trọng.</div>
+  <div class="holo-chat" id="holoChat"><div class="holo-message">Xin chào! ✨ Mình là trợ lý ảo TTT AI. Bạn có thể đính kèm ảnh từ thư viện hoặc chụp ảnh bằng điện thoại rồi hỏi về ảnh.</div></div>
+  <div style="display:flex;gap:7px;padding:0 12px 8px;flex-wrap:wrap">
+    <input id="holoImageInput" type="file" accept="image/*" hidden>
+    <input id="holoCameraInput" type="file" accept="image/*" capture="environment" hidden>
+    <button id="holoAttachBtn" type="button" style="border:1px solid #31565d;border-radius:8px;background:#10232a;color:#bdfbff;padding:8px 10px;font-size:10px">📎 GỬI ẢNH</button>
+    <button id="holoCameraBtn" type="button" style="border:1px solid #31565d;border-radius:8px;background:#10232a;color:#bdfbff;padding:8px 10px;font-size:10px">📷 CHỤP ẢNH</button>
+    <button id="holoRemoveImage" type="button" hidden style="border:1px solid #6a4545;border-radius:8px;background:#281619;color:#ffd2d2;padding:8px 10px;font-size:10px">✕ BỎ ẢNH</button>
+  </div>
+  <div id="holoImageStatus" style="padding:0 13px 8px;font-size:10px;color:#9edce0" aria-live="polite">Chưa đính kèm ảnh</div>
+  <form class="holo-form" id="holoForm"><input id="holoInput" maxlength="500" placeholder="Hỏi AI hoặc hỏi về ảnh…" autocomplete="off"><button id="holoSend" type="submit">GỬI</button></form>
+  <div class="holo-hint">Ảnh được gửi tới Gemini để phân tích. Cần có GEMINI_API_KEY trong Render; kết quả AI có thể sai.</div>
 </div>
 <button class="holo-launch" id="holoLaunch" aria-label="Mở trợ lý ảo TTT AI" aria-expanded="false"><span class="holo-orb"></span><span class="holo-beam"></span><span class="holo-base"></span><span class="holo-label">✦ TTT AI</span></button>
 <script>
-(()=>{const panel=document.getElementById('holoPanel'),launch=document.getElementById('holoLaunch'),close=document.getElementById('holoClose'),form=document.getElementById('holoForm'),input=document.getElementById('holoInput'),chat=document.getElementById('holoChat'),send=document.getElementById('holoSend');
+(()=>{
+const panel=document.getElementById('holoPanel'),launch=document.getElementById('holoLaunch'),close=document.getElementById('holoClose'),form=document.getElementById('holoForm'),input=document.getElementById('holoInput'),chat=document.getElementById('holoChat'),send=document.getElementById('holoSend');
+const imageInput=document.getElementById('holoImageInput'),cameraInput=document.getElementById('holoCameraInput');
+const attachBtn=document.getElementById('holoAttachBtn'),cameraBtn=document.getElementById('holoCameraBtn'),removeBtn=document.getElementById('holoRemoveImage'),imageStatus=document.getElementById('holoImageStatus');
+let attachedImage=null,attachedObjectUrl=null;
 function toggle(open){panel.hidden=!open;launch.setAttribute('aria-expanded',String(open));if(open)input.focus()}
 function message(text,who='ai'){const el=document.createElement('div');el.className='holo-message'+(who==='user'?' user':'');el.textContent=text;chat.appendChild(el);chat.scrollTop=chat.scrollHeight;return el}
+function selectImage(file){
+  if(!file)return;
+  if(!file.type.startsWith('image/')){message('Tệp bạn chọn không phải ảnh. Hãy chọn ảnh JPG, PNG hoặc WEBP.');return}
+  if(file.size>25*1024*1024){message('Ảnh gốc lớn hơn 25 MB. Hãy chọn ảnh nhỏ hơn.');return}
+  attachedImage=file;
+  if(attachedObjectUrl)URL.revokeObjectURL(attachedObjectUrl);
+  attachedObjectUrl=URL.createObjectURL(file);
+  imageStatus.textContent='Đã đính kèm: '+file.name+' · '+(file.size/1024/1024).toFixed(2)+' MB';
+  removeBtn.hidden=false;
+  message('📷 Đã đính kèm ảnh: '+file.name,'user');
+}
+function clearAttachedImage(){attachedImage=null;if(attachedObjectUrl)URL.revokeObjectURL(attachedObjectUrl);attachedObjectUrl=null;imageInput.value='';cameraInput.value='';imageStatus.textContent='Chưa đính kèm ảnh';removeBtn.hidden=true}
+function fileToDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const objectUrl=URL.createObjectURL(file),img=new Image();
+    img.onload=async()=>{
+      try{
+        const maxSide=1400,ratio=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));
+        const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(img.naturalHeight*ratio));
+        const ctx=canvas.getContext('2d',{alpha:false});ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);URL.revokeObjectURL(objectUrl);
+        let blob=await new Promise(r=>canvas.toBlob(r,'image/jpeg',.82));
+        if(!blob)throw Error('Không thể xử lý ảnh.');
+        if(blob.size>5*1024*1024){const ratio2=Math.sqrt((5*1024*1024)/blob.size)*.9;const c=document.createElement('canvas');c.width=Math.max(1,Math.round(canvas.width*ratio2));c.height=Math.max(1,Math.round(canvas.height*ratio2));c.getContext('2d',{alpha:false}).drawImage(canvas,0,0,c.width,c.height);blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.76));}
+        if(!blob||blob.size>6*1024*1024)throw Error('Ảnh sau nén vẫn quá lớn. Hãy chọn ảnh khác.');
+        const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('Không đọc được ảnh.'));reader.readAsDataURL(blob);
+      }catch(err){URL.revokeObjectURL(objectUrl);reject(err)}
+    };
+    img.onerror=()=>{URL.revokeObjectURL(objectUrl);reject(Error('Trình duyệt không đọc được ảnh này.'))};img.src=objectUrl;
+  });
+}
+async function askImage(file,question){
+  const image=await fileToDataUrl(file);
+  const response=await fetch('/analyze-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image,question:question||'Hãy mô tả ảnh bằng tiếng Việt, nêu những vật thể chính và chi tiết nhìn thấy.'})});
+  let data={};try{data=await response.json()}catch(_){}
+  if(!response.ok)throw Error(data.error||'Không phân tích được ảnh.');
+  return data.reply||'AI chưa có câu trả lời cho ảnh này.';
+}
 launch.addEventListener('click',()=>toggle(panel.hidden));close.addEventListener('click',()=>toggle(false));
-form.addEventListener('submit', async e => {
-    e.preventDefault();
-
-    const q = input.value.trim();
-    if (!q) return;
-
-    input.value = '';
-    message(q, 'user');
-
-    const el = document.createElement('div');
-    el.className = 'holo-message';
-    el.textContent = 'AI đang suy nghĩ...';
-    chat.appendChild(el);
-    chat.scrollTop = chat.scrollHeight;
-
-    send.disabled = true;
-
-    try {
-        const response = await fetch('/chat', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                messages: [{role: 'user', content: q}]
-            })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error || 'Không gọi được AI.');
-        }
-
-        el.textContent = data.reply || 'AI chưa có câu trả lời.';
-    } catch (err) {
-        el.textContent = 'Lỗi: ' + err.message;
-    } finally {
-        send.disabled = false;
-        input.focus();
-        chat.scrollTop = chat.scrollHeight;
-    }
-});})();
+attachBtn.addEventListener('click',()=>imageInput.click());cameraBtn.addEventListener('click',()=>cameraInput.click());
+imageInput.addEventListener('change',e=>{selectImage(e.target.files&&e.target.files[0]);imageInput.value=''});
+cameraInput.addEventListener('change',e=>{selectImage(e.target.files&&e.target.files[0]);cameraInput.value=''});
+removeBtn.addEventListener('click',clearAttachedImage);
+form.addEventListener('submit',async e=>{
+  e.preventDefault();const q=input.value.trim();if(!q&&!attachedImage){message('Hãy nhập câu hỏi hoặc đính kèm một ảnh trước nhé.');return}
+  const prompt=q||(attachedImage?'Hãy mô tả ảnh này bằng tiếng Việt.':'');input.value='';message((attachedImage?'📷 Hỏi về ảnh: ':'')+prompt,'user');
+  const el=document.createElement('div');el.className='holo-message';el.textContent=attachedImage?'Đang gửi ảnh cho Gemini phân tích…':'AI đang suy nghĩ…';chat.appendChild(el);chat.scrollTop=chat.scrollHeight;send.disabled=true;attachBtn.disabled=true;cameraBtn.disabled=true;
+  try{
+    let reply;
+    if(attachedImage){reply=await askImage(attachedImage,prompt);clearAttachedImage()}
+    else {const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:prompt}]})});let data={};try{data=await response.json()}catch(_){}if(!response.ok)throw Error(data.error||'Không gọi được AI.');reply=data.reply||'AI chưa có câu trả lời.'}
+    el.textContent=reply;
+  }catch(err){el.textContent='Lỗi: '+(err.message||'Không kết nối được AI.');}
+  finally{send.disabled=false;attachBtn.disabled=false;cameraBtn.disabled=false;input.focus();chat.scrollTop=chat.scrollHeight}
+});
+})();
 </script>
 
 </body></html>
@@ -775,6 +886,93 @@ def analyze_image():
     except (ValueError, IndexError, KeyError, TypeError):
         app.logger.exception("Phản hồi Gemini không hợp lệ")
         return jsonify(error="Phản hồi từ Gemini không đúng định dạng. Hãy thử lại."), 502
+
+@app.route("/locate-object", methods=["POST"])
+def locate_object():
+    """Dùng Gemini Vision để ước lượng bounding boxes cho vật do người dùng nhập."""
+    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return jsonify(error="Chưa cấu hình GEMINI_API_KEY trong Render > Environment. Tính năng định vị AI cần khóa này."), 503
+
+    data = request.get_json(silent=True) or {}
+    image = data.get("image")
+    target = data.get("target", "")
+    if not isinstance(target, str) or not target.strip():
+        return jsonify(error="Hãy nhập tên vật cần tìm."), 400
+    target = target.strip()[:100]
+    if not isinstance(image, str) or not image.startswith("data:image/") or "," not in image:
+        return jsonify(error="Dữ liệu ảnh không hợp lệ. Hãy chọn ảnh rồi thử lại."), 400
+    if len(image) > 8 * 1024 * 1024:
+        return jsonify(error="Ảnh sau nén vẫn quá lớn. Hãy chọn ảnh nhỏ hơn."), 413
+
+    try:
+        header, encoded = image.split(",", 1)
+        mime_type = header[5:].split(";", 1)[0]
+        if mime_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+            mime_type = "image/jpeg"
+        prompt = (
+            "Bạn là mô hình định vị vật thể trong ảnh. Người dùng muốn tìm: " + target + ".\n"
+            "Hãy xác định các vùng ảnh thực sự chứa đúng vật đó. Nếu không thấy rõ hoặc không chắc, trả về objects rỗng. "
+            "Trả về JSON thuần, không Markdown, theo cấu trúc: "
+            '{"objects":[{"label":"tên vật ngắn","confidence":0.0,"box":[ymin,xmin,ymax,xmax]}],"reply":"ghi chú ngắn bằng tiếng Việt"}. '
+            "Tọa độ box phải là số nguyên chuẩn hóa từ 0 đến 1000 theo thứ tự [ymin,xmin,ymax,xmax], "
+            "gốc tọa độ ở góc trên trái. confidence từ 0 đến 1, chỉ là ước lượng. "
+            "Không bịa vị trí; tối đa 10 đối tượng; nếu không tìm thấy, objects là []."
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [
+                {"text": prompt},
+                {"inlineData": {"mimeType": mime_type, "data": encoded}}
+            ]}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1200, "responseMimeType": "application/json"}
+        }
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+            headers={"Content-Type": "application/json", "X-goog-api-key": api_key},
+            json=payload,
+            timeout=90
+        )
+        if response.status_code >= 400:
+            app.logger.error("Gemini locate lỗi HTTP %s: %s", response.status_code, response.text[:1200])
+            if response.status_code in (401, 403):
+                return jsonify(error="Gemini từ chối API key. Hãy kiểm tra GEMINI_API_KEY trong Render."), 502
+            if response.status_code == 429:
+                return jsonify(error="Gemini đang hết hạn mức hoặc gửi quá nhanh. Hãy thử lại sau."), 429
+            return jsonify(error="Gemini chưa định vị được ảnh. Hãy kiểm tra nhật ký Render rồi thử lại."), 502
+        result = response.json()
+        parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        raw = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
+        parsed = json.loads(raw)
+        objects = []
+        for obj in parsed.get("objects", [])[:10]:
+            if not isinstance(obj, dict):
+                continue
+            box = obj.get("box")
+            if not isinstance(box, list) or len(box) != 4:
+                continue
+            try:
+                coords = [max(0, min(1000, int(float(v)))) for v in box]
+            except (ValueError, TypeError):
+                continue
+            ymin, xmin, ymax, xmax = coords
+            if ymax <= ymin or xmax <= xmin:
+                continue
+            objects.append({
+                "label": str(obj.get("label") or target)[:80],
+                "confidence": max(0.0, min(1.0, float(obj.get("confidence", 0.75)))),
+                "box": [ymin, xmin, ymax, xmax]
+            })
+        return jsonify(objects=objects, reply=str(parsed.get("reply") or "")[:500])
+    except requests.exceptions.Timeout:
+        return jsonify(error="AI định vị quá lâu. Hãy thử lại với ảnh nhỏ hơn."), 504
+    except requests.exceptions.RequestException:
+        app.logger.exception("Lỗi kết nối Gemini khi định vị vật thể")
+        return jsonify(error="Không kết nối được Gemini. Hãy thử lại sau."), 502
+    except (ValueError, IndexError, KeyError, TypeError):
+        app.logger.exception("Phản hồi định vị Gemini không hợp lệ")
+        return jsonify(error="AI trả về dữ liệu định vị không hợp lệ. Hãy thử lại."), 502
+
 
 if __name__ == "__main__":
     app.run(debug=False)
