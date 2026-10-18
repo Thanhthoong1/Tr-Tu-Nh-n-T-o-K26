@@ -3,7 +3,6 @@ import os
 import logging
 import requests
 from flask import Flask, request, jsonify, render_template_string
-from openai import OpenAI
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -282,66 +281,78 @@ def home():
         })
 @app.route("/chat", methods=["POST"])
 def chat():
+    """Chat văn bản qua Gemini API; API key chỉ đọc từ biến môi trường Render."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return jsonify(error="Chưa cấu hình GEMINI_API_KEY trong Render > Environment."), 503
+
     data = request.get_json(silent=True) or {}
     messages = data.get("messages", [])
-
     if not isinstance(messages, list) or not messages:
         return jsonify(error="Bạn hãy nhập câu hỏi."), 400
 
-    safe_messages = []
+    contents = []
     for item in messages[-12:]:
         if not isinstance(item, dict):
             continue
-
         role = item.get("role")
         content = item.get("content", "")
-
         if role not in ("user", "assistant") or not isinstance(content, str):
             continue
-
-        safe_messages.append({
-            "role": role,
-            "content": content[:4000]
+        content = content.strip()[:4000]
+        if not content:
+            continue
+        contents.append({
+            "role": "user" if role == "user" else "model",
+            "parts": [{"text": content}]
         })
 
-    if not safe_messages or safe_messages[-1]["role"] != "user":
+    if not contents or contents[-1]["role"] != "user":
         return jsonify(error="Tin nhắn chưa hợp lệ."), 400
 
-    safe_messages.insert(0, {
-        "role": "system",
-        "content": (
-            "Bạn là trợ lý AI thân thiện của website "
-            "Trí Tuệ Nhân Tạo K26. Trả lời bằng tiếng Việt, "
-            "rõ ràng, hữu ích và phù hợp với người mới học."
-        )
-    })
+    payload = {
+        "systemInstruction": {
+            "parts": [{
+                "text": (
+                    "Bạn là trợ lý AI thân thiện của website Trí Tuệ Nhân Tạo K26. "
+                    "Trả lời bằng tiếng Việt, rõ ràng, hữu ích và phù hợp với người mới học."
+                )
+            }]
+        },
+        "contents": contents,
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024}
+    }
 
     try:
         response = requests.post(
-            "http://localhost:11434/api/chat",
-            json={
-                "model": "llama3.2:1b",
-                "messages": safe_messages,
-                "stream": False
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+            headers={
+                "Content-Type": "application/json",
+                "X-goog-api-key": api_key
             },
-            timeout=180
+            json=payload,
+            timeout=60
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            app.logger.error("Gemini chat lỗi HTTP %s: %s", response.status_code, response.text[:1500])
+            if response.status_code in (401, 403):
+                return jsonify(error="Gemini từ chối API key. Hãy kiểm tra GEMINI_API_KEY trong Render."), 502
+            if response.status_code == 429:
+                return jsonify(error="Gemini đang hết hạn mức hoặc gửi quá nhanh. Hãy thử lại sau."), 429
+            return jsonify(error="Gemini chưa xử lý được yêu cầu. Hãy kiểm tra model và nhật ký Render."), 502
+
         result = response.json()
-        reply = result.get("message", {}).get("content", "")
-
-        if not reply:
-            return jsonify(error="AI chưa tạo được câu trả lời."), 502
-
-        return jsonify(reply=reply)
+        parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        reply = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict))
+        if not reply.strip():
+            return jsonify(error="Gemini chưa tạo được câu trả lời. Hãy thử câu hỏi khác."), 502
+        return jsonify(reply=reply.strip())
 
     except requests.exceptions.Timeout:
-        return jsonify(error="AI đang xử lý lâu. Bạn hãy thử lại."), 504
+        return jsonify(error="Gemini phản hồi quá lâu. Bạn hãy thử lại."), 504
     except requests.exceptions.RequestException:
-        app.logger.exception("Lỗi kết nối Ollama")
-        return jsonify(
-            error="Không kết nối được Ollama. Hãy kiểm tra Ollama đang chạy."
-        ), 502
+        app.logger.exception("Lỗi kết nối Gemini")
+        return jsonify(error="Không kết nối được Gemini. Hãy kiểm tra Internet hoặc thử lại sau."), 502
 
 # ================= TTT AI — TRí Tuệ Nhân Tạo K26 =================
 # Trang phân tích ảnh là trang chủ; ảnh gốc được giữ trong trình duyệt.
@@ -414,7 +425,7 @@ VISION_HTML = r"""
               <div class="detail-section"><div class="detailtitle">THÔNG TIN ẢNH <span id="imageStatus">Chờ ảnh</span></div><div class="kv"><span>Tên tệp</span><span id="metaName">—</span></div><div class="kv"><span>Kích thước</span><span id="metaSize">—</span></div><div class="kv"><span>Độ phân giải</span><span id="metaResolution">—</span></div><div class="kv"><span>Định dạng</span><span id="metaType">—</span></div></div>
               <div class="divider"></div><div class="detail-section"><div class="detailtitle">NHẬN DIỆN ĐỐI TƯỢNG <span id="resultCount">Chưa phân tích</span></div><div id="results" class="results"><div class="emptyresults">Chọn ảnh và nhấn <b>PHÂN TÍCH TOÀN DIỆN</b> để xem các vật thể mà mô hình phát hiện được.</div></div></div>
             </div></section>
-            <section class="card"><div class="cardhead"><div><div class="cardtitle">03 / AI mô tả & hỏi đáp</div><div class="cardsub">Dùng mô hình thị giác để hiểu ảnh</div></div><div class="tiny">AI VISION</div></div><div class="detailbody"><div id="description" class="description">Sau khi chọn ảnh, nhấn “Phân tích toàn diện” để AI mô tả ảnh bằng tiếng Việt. Bạn cũng có thể hỏi câu hỏi riêng về ảnh.</div><form id="questionForm" class="questionbox"><input id="questionInput" maxlength="500" placeholder="Ví dụ: Đây là con gì?" autocomplete="off"><button id="askBtn" type="submit" title="Hỏi AI" disabled>➤</button></form><div class="fineprint" id="apiNote">Tính năng mô tả và hỏi ảnh cần OPENAI_API_KEY được cài trên máy chủ. Nếu chưa có khóa, nhận diện vật thể cục bộ vẫn dùng được.</div></div></section>
+            <section class="card"><div class="cardhead"><div><div class="cardtitle">03 / AI mô tả & hỏi đáp</div><div class="cardsub">Dùng mô hình thị giác để hiểu ảnh</div></div><div class="tiny">AI VISION</div></div><div class="detailbody"><div id="description" class="description">Sau khi chọn ảnh, nhấn “Phân tích toàn diện” để AI mô tả ảnh bằng tiếng Việt. Bạn cũng có thể hỏi câu hỏi riêng về ảnh.</div><form id="questionForm" class="questionbox"><input id="questionInput" maxlength="500" placeholder="Ví dụ: Đây là con gì?" autocomplete="off"><button id="askBtn" type="submit" title="Hỏi AI" disabled>➤</button></form><div class="fineprint" id="apiNote">Tính năng mô tả và hỏi ảnh cần GEMINI_API_KEY được cài trên máy chủ. Nếu chưa có khóa, nhận diện vật thể cục bộ vẫn dùng được.</div></div></section>
           </aside>
         </div>
         <div class="footer"><div><b style="color:#aabfc2">TTT AI · K26</b><br>Phòng phân tích hình ảnh bằng trí tuệ nhân tạo.</div><div>Không thể cam kết độ chính xác cố định cho mọi ảnh. COCO-SSD chỉ nhận diện các lớp đã được huấn luyện; mô hình thị giác có thể mô tả rộng hơn.</div></div>
@@ -585,41 +596,79 @@ def vision_ai_page():
 
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
-    api_key = os.environ.get("OPENAI_API_KEY")
+    """Gửi ảnh và câu hỏi tới Gemini Vision; key không được gửi từ trình duyệt."""
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return jsonify(error="Chưa cấu hình OPENAI_API_KEY trên máy chủ. Nhận diện vật thể cục bộ vẫn có thể dùng; để AI mô tả và trả lời câu hỏi về ảnh, hãy thêm API key trong Environment."), 503
+        return jsonify(error="Chưa cấu hình GEMINI_API_KEY trong Render > Environment. COCO-SSD vẫn có thể nhận diện vật thể."), 503
+
     data = request.get_json(silent=True) or {}
     image = data.get("image")
     question = data.get("question", "Hãy mô tả chi tiết nội dung ảnh bằng tiếng Việt.")
+
     if not isinstance(image, str) or not image.startswith("data:image/") or "," not in image:
         return jsonify(error="Dữ liệu ảnh không hợp lệ. Hãy chọn ảnh và thử lại."), 400
     if len(image) > 8 * 1024 * 1024:
-        return jsonify(error="Ảnh dùng cho AI sau nén vẫn quá lớn. Hãy thử ảnh khác."), 413
+        return jsonify(error="Ảnh sau nén vẫn quá lớn. Hãy thử ảnh khác."), 413
     if not isinstance(question, str):
         question = "Hãy mô tả chi tiết nội dung ảnh bằng tiếng Việt."
     question = question[:1000]
+
     try:
-        client = OpenAI(api_key=api_key)
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            instructions=(
-                "Bạn là TTT AI, trợ lý thị giác máy tính. Luôn trả lời bằng tiếng Việt tự nhiên. "
-                "Chỉ nêu chi tiết có thể suy ra hợp lý từ ảnh; không khẳng định chắc chắn điều không nhìn thấy. "
-                "Nếu được hỏi loài vật/vật thể và không chắc, hãy nói rõ mức độ không chắc chắn. "
-                "Phân biệt mô tả quan sát được với suy đoán. Không tự bịa độ chính xác phần trăm."
-            ),
-            input=[{
+        header, encoded = image.split(",", 1)
+        mime_type = header[5:].split(";", 1)[0]
+        if mime_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+            mime_type = "image/jpeg"
+
+        payload = {
+            "systemInstruction": {
+                "parts": [{
+                    "text": (
+                        "Bạn là TTT AI, trợ lý thị giác máy tính. Luôn trả lời bằng tiếng Việt tự nhiên. "
+                        "Chỉ nêu chi tiết có thể suy ra hợp lý từ ảnh; không khẳng định chắc chắn điều không nhìn thấy. "
+                        "Nếu không chắc, hãy nói rõ mức độ không chắc chắn. Không tự bịa độ chính xác phần trăm."
+                    )
+                }]
+            },
+            "contents": [{
                 "role": "user",
-                "content": [
-                    {"type": "input_text", "text": question},
-                    {"type": "input_image", "image_url": image, "detail": "high"}
+                "parts": [
+                    {"text": question},
+                    {"inlineData": {"mimeType": mime_type, "data": encoded}}
                 ]
-            }]
+            }],
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1200}
+        }
+
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+            headers={
+                "Content-Type": "application/json",
+                "X-goog-api-key": api_key
+            },
+            json=payload,
+            timeout=90
         )
-        return jsonify(reply=response.output_text or "AI chưa tạo được câu trả lời cho ảnh này.")
-    except Exception:
-        app.logger.exception("Lỗi khi phân tích ảnh bằng AI thị giác")
-        return jsonify(error="Chưa gọi được AI thị giác. Hãy kiểm tra OPENAI_API_KEY, hạn mức API và nhật ký máy chủ."), 502
+        if response.status_code >= 400:
+            app.logger.error("Gemini vision lỗi HTTP %s: %s", response.status_code, response.text[:1500])
+            if response.status_code in (401, 403):
+                return jsonify(error="Gemini từ chối API key. Hãy kiểm tra GEMINI_API_KEY trong Render."), 502
+            if response.status_code == 429:
+                return jsonify(error="Gemini đang hết hạn mức hoặc gửi quá nhanh. Hãy thử lại sau."), 429
+            return jsonify(error="Gemini chưa phân tích được ảnh. Hãy kiểm tra nhật ký Render rồi thử lại."), 502
+
+        result = response.json()
+        parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        reply = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict))
+        return jsonify(reply=reply.strip() or "Gemini chưa tạo được câu trả lời cho ảnh này.")
+
+    except requests.exceptions.Timeout:
+        return jsonify(error="Gemini xử lý ảnh quá lâu. Hãy thử ảnh nhỏ hơn."), 504
+    except requests.exceptions.RequestException:
+        app.logger.exception("Lỗi khi phân tích ảnh bằng Gemini")
+        return jsonify(error="Không kết nối được Gemini. Hãy thử lại sau."), 502
+    except (ValueError, IndexError, KeyError, TypeError):
+        app.logger.exception("Phản hồi Gemini không hợp lệ")
+        return jsonify(error="Phản hồi từ Gemini không đúng định dạng. Hãy thử lại."), 502
 
 if __name__ == "__main__":
     app.run(debug=False)
