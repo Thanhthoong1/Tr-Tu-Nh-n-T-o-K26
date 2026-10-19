@@ -9,6 +9,53 @@ from flask import Flask, request, jsonify, render_template_string
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
+# Mô hình dự phòng: ưu tiên model chính trước, chỉ thử model khác khi
+# gặp giới hạn (429), model không khả dụng (404) hoặc lỗi dịch vụ (503).
+# Hạn mức thực tế tùy dự án; danh sách này không đảm bảo luôn có lượt miễn phí.
+GEMINI_FALLBACK_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-2.5-flash-lite",
+]
+
+def gemini_post_with_fallback(api_key, payload, timeout=60):
+    """Gửi yêu cầu lần lượt qua các model; tự chuyển khi gặp 429/404/503."""
+    last_response = None
+    first_quota_response = None
+    for model_name in GEMINI_FALLBACK_MODELS:
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent"
+        )
+        response = requests.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "X-goog-api-key": api_key,
+            },
+            json=payload,
+            timeout=timeout,
+        )
+        if response.status_code < 400:
+            app.logger.info("Gemini request succeeded with model %s", model_name)
+            return response, model_name
+
+        last_response = response
+        app.logger.warning(
+            "Gemini model %s returned HTTP %s", model_name, response.status_code
+        )
+        if response.status_code == 429 and first_quota_response is None:
+            first_quota_response = response
+        if response.status_code not in (429, 404, 503):
+            return response, model_name
+
+    # Nếu ít nhất một model báo hết hạn mức, giữ mã 429 để giao diện báo đúng.
+    if first_quota_response is not None:
+        return first_quota_response, "fallback models exhausted"
+    return last_response, "fallback models exhausted"
+
 HTML = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -326,15 +373,7 @@ def chat():
     }
 
     try:
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "X-goog-api-key": api_key
-            },
-            json=payload,
-            timeout=60
-        )
+        response, used_model = gemini_post_with_fallback(api_key, payload, timeout=60)
         if response.status_code >= 400:
             app.logger.error("Gemini chat lỗi HTTP %s: %s", response.status_code, response.text[:1500])
             if response.status_code in (401, 403):
@@ -856,15 +895,7 @@ def analyze_image():
             "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1200}
         }
 
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "X-goog-api-key": api_key
-            },
-            json=payload,
-            timeout=90
-        )
+        response, used_model = gemini_post_with_fallback(api_key, payload, timeout=90)
         if response.status_code >= 400:
             app.logger.error("Gemini vision lỗi HTTP %s: %s", response.status_code, response.text[:1500])
             if response.status_code in (401, 403):
@@ -926,12 +957,7 @@ def locate_object():
             ]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1200, "responseMimeType": "application/json"}
         }
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
-            headers={"Content-Type": "application/json", "X-goog-api-key": api_key},
-            json=payload,
-            timeout=90
-        )
+        response, used_model = gemini_post_with_fallback(api_key, payload, timeout=90)
         if response.status_code >= 400:
             app.logger.error("Gemini locate lỗi HTTP %s: %s", response.status_code, response.text[:1200])
             if response.status_code in (401, 403):
