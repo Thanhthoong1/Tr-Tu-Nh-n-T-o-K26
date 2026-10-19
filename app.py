@@ -327,7 +327,7 @@ def chat():
 
     try:
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
             headers={
                 "Content-Type": "application/json",
                 "X-goog-api-key": api_key
@@ -857,7 +857,7 @@ def analyze_image():
         }
 
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
             headers={
                 "Content-Type": "application/json",
                 "X-goog-api-key": api_key
@@ -927,7 +927,7 @@ def locate_object():
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1200, "responseMimeType": "application/json"}
         }
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
             headers={"Content-Type": "application/json", "X-goog-api-key": api_key},
             json=payload,
             timeout=90
